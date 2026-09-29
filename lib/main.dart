@@ -78,32 +78,34 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
 
   // 撮影した写真に何枚のレシートがあるか入力
   Future<int?> askReceiptCount() async {
-    final controller = TextEditingController();
-
-    final int? count = await showDialog<int>(
+    final result = await showDialog<int>(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
+        String value = '';
+
         return AlertDialog(
           title: const Text('何枚のレシートがありますか？'),
           content: TextField(
-            controller: controller,
             autofocus: true,
             keyboardType: TextInputType.number,
+            onChanged: (text) {
+              value = text;
+            },
             decoration: const InputDecoration(hintText: '例：3', suffixText: '枚'),
           ),
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.of(context).pop();
+                Navigator.of(dialogContext).pop();
               },
               child: const Text('キャンセル'),
             ),
             FilledButton(
               onPressed: () {
-                final count = int.tryParse(controller.text);
+                final count = int.tryParse(value);
 
                 if (count != null && count > 0) {
-                  Navigator.of(context).pop(count);
+                  Navigator.of(dialogContext).pop(count);
                 }
               },
               child: const Text('開始'),
@@ -113,49 +115,33 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
       },
     );
 
-    controller.dispose();
-
-    return count;
+    return result;
   }
 
   Future<void> scanReceipt() async {
     // --------------------------------------------------
     // 1. カメラ or ファイルを選択
     // --------------------------------------------------
-    final String? imagePath = await showModalBottomSheet<String>(
+    final String? source = await showDialog<String>(
       context: context,
-      builder: (context) {
-        return SafeArea(
-          child: Wrap(
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('レシート画像を選択'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
                 leading: const Icon(Icons.camera_alt),
                 title: const Text('カメラで撮影'),
-                onTap: () async {
-                  final XFile? image = await _picker.pickImage(
-                    source: ImageSource.camera,
-                    imageQuality: 100,
-                  );
-
-                  if (image != null && context.mounted) {
-                    Navigator.of(context).pop(image.path);
-                  }
+                onTap: () {
+                  Navigator.of(dialogContext).pop('camera');
                 },
               ),
-
               ListTile(
                 leading: const Icon(Icons.folder),
                 title: const Text('ファイルから選択'),
-                onTap: () async {
-                  final result = await FilePicker.platform.pickFiles(
-                    type: FileType.image,
-                  );
-
-                  if (result != null &&
-                      result.files.single.path != null &&
-                      context.mounted) {
-                    Navigator.of(context).pop(result.files.single.path!);
-                  }
+                onTap: () {
+                  Navigator.of(dialogContext).pop('file');
                 },
               ),
             ],
@@ -164,7 +150,7 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
       },
     );
 
-    if (imagePath == null) {
+    if (source == null) {
       return;
     }
 
@@ -173,7 +159,41 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
     }
 
     // --------------------------------------------------
-    // 2. この写真に何枚のレシートがあるか入力
+    // 2. 選択された方法で画像を取得
+    // --------------------------------------------------
+    String? imagePath;
+
+    if (source == 'camera') {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 100,
+      );
+
+      if (image == null) {
+        return;
+      }
+
+      imagePath = image.path;
+    } else if (source == 'file') {
+      final result = await FilePicker.platform.pickFiles(type: FileType.image);
+
+      if (result == null) {
+        return;
+      }
+
+      imagePath = result.files.single.path;
+
+      if (imagePath == null) {
+        return;
+      }
+    }
+
+    if (!mounted || imagePath == null) {
+      return;
+    }
+
+    // --------------------------------------------------
+    // 3. この写真に何枚のレシートがあるか入力
     // --------------------------------------------------
     final int? count = await askReceiptCount();
 
@@ -186,7 +206,7 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
     }
 
     // --------------------------------------------------
-    // 3. 同じ写真を指定回数だけトリミング
+    // 4. 同じ写真を指定回数だけトリミング
     // --------------------------------------------------
     final List<String> croppedPaths = [];
 
@@ -207,7 +227,6 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
         ],
       );
 
-      // トリミングをキャンセルした場合
       if (croppedFile == null) {
         return;
       }
@@ -220,7 +239,7 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
     }
 
     // --------------------------------------------------
-    // 4. 全ての切り出しが終わってからOCR
+    // 5. 全ての切り出しが終わってからOCR
     // --------------------------------------------------
     final textRecognizer = TextRecognizer(
       script: TextRecognitionScript.japanese,
@@ -229,19 +248,15 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
     try {
       final List<OcrResult> results = [];
 
-      for (int i = 0; i < croppedPaths.length; i++) {
-        if (!mounted) {
-          return;
-        }
-
-        final inputImage = InputImage.fromFilePath(croppedPaths[i]);
+      for (final croppedPath in croppedPaths) {
+        final inputImage = InputImage.fromFilePath(croppedPath);
 
         final RecognizedText recognizedText = await textRecognizer.processImage(
           inputImage,
         );
 
         results.add(
-          OcrResult(imagePath: croppedPaths[i], text: recognizedText.text),
+          OcrResult(imagePath: croppedPath, text: recognizedText.text),
         );
       }
 
@@ -250,7 +265,7 @@ class _ReceiptListPageState extends State<ReceiptListPage> {
       }
 
       // --------------------------------------------------
-      // 5. 全レシートのOCR結果を表示
+      // 6. OCR結果を表示
       // --------------------------------------------------
       await Navigator.of(context).push(
         MaterialPageRoute(
