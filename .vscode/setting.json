@@ -1,0 +1,5 @@
+{
+  "dart.analysisExcludedFolders": [
+    "packages/image_cropper/example"
+  ]
+}
